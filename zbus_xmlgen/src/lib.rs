@@ -1,5 +1,6 @@
 use snakecase::ascii::to_snakecase;
 use std::{
+    collections::HashMap,
     error::Error,
     fmt::{Display, Formatter, Write},
     process::{Command, Stdio},
@@ -171,11 +172,13 @@ impl GenTrait<'_> {
         writeln!(w, ")]")?;
         writeln!(w, "pub trait {name} {{")?;
 
+        let mut unique_name_generator = UniqueNameGenerator::default();
+
         let mut methods = iface.methods().to_vec();
         methods.sort_by(|a, b| a.name().partial_cmp(&b.name()).unwrap());
         for m in &methods {
             let (inputs, output) = inputs_output_from_args(m.args());
-            let name = to_identifier(&to_snakecase(m.name().as_str()));
+            let name = unique_name_generator.method(m.name().as_str());
             writeln!(w)?;
             writeln!(w, "    /// {} method", m.name())?;
             if pascal_case(&name) != m.name().as_str() {
@@ -189,7 +192,7 @@ impl GenTrait<'_> {
         signals.sort_by(|a, b| a.name().partial_cmp(&b.name()).unwrap());
         for signal in &signals {
             let args = parse_signal_args(signal.args());
-            let name = to_identifier(&to_snakecase(signal.name().as_str()));
+            let name = unique_name_generator.method(signal.name().as_str());
             writeln!(w)?;
             writeln!(w, "    /// {} signal", signal.name())?;
             if pascal_case(&name) != signal.name().as_str() {
@@ -213,18 +216,20 @@ impl GenTrait<'_> {
             writeln!(w)?;
             writeln!(w, "    /// {} property", p.name())?;
             if p.access().read() {
+                let getter_name = unique_name_generator.property_getter(&name);
                 writeln!(w, "{}", fn_attribute)?;
                 let output = to_rust_type(p.ty(), false, false);
                 hide_clippy_type_complexity_lint(w, p.ty())?;
-                writeln!(w, "    fn {name}(&self) -> zbus::Result<{output}>;",)?;
+                writeln!(w, "    fn {getter_name}(&self) -> zbus::Result<{output}>;",)?;
             }
 
             if p.access().write() {
+                let setter_name = unique_name_generator.property_setter(&name);
                 writeln!(w, "{}", fn_attribute)?;
                 let input = to_rust_type(p.ty(), true, true);
                 writeln!(
                     w,
-                    "    fn set_{name}(&self, value: {input}) -> zbus::Result<()>;",
+                    "    fn {setter_name}(&self, value: {input}) -> zbus::Result<()>;",
                 )?;
             }
         }
@@ -407,6 +412,35 @@ fn to_identifier(id: &str) -> String {
         format!("{id}_")
     } else {
         id.replace('-', "_")
+    }
+}
+
+#[derive(Default)]
+struct UniqueNameGenerator {
+    used_identifiers: HashMap<String, usize>,
+}
+
+impl UniqueNameGenerator {
+    fn make_unique(&mut self, identifier: &str) -> String {
+        let use_count = self
+            .used_identifiers
+            .entry(identifier.to_owned())
+            .or_default();
+        let new_identifier = format!("{}{}", &identifier, "_".repeat(*use_count));
+        *use_count += 1;
+        new_identifier
+    }
+
+    fn method(&mut self, name: &str) -> String {
+        self.make_unique(&to_identifier(&to_snakecase(name)))
+    }
+
+    fn property_getter(&mut self, name: &str) -> String {
+        self.make_unique(&name)
+    }
+
+    fn property_setter(&mut self, name: &str) -> String {
+        self.make_unique(&format!("set_{}", name))
     }
 }
 
